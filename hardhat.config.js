@@ -15,6 +15,10 @@ module.exports = {
     mainnet: {
       url: `https://mainnet.infura.io/v3/${process.env.INFURA_PROJECT_ID}`,
       accounts: [process.env.PRIVATE_KEY]
+    },
+    polygon: {
+      url: `https://polygon-mainnet.infura.io/v3/${process.env.INFURA_PROJECT_ID}`,
+      accounts: [process.env.PRIVATE_KEY]
     }
   }
 };
