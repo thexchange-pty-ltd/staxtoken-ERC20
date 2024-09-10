@@ -57,7 +57,7 @@ contract StaxToken is ERC20, Ownable {
         );
         
         
-        require(shibToken.transferFrom(msg.sender, address(this), totalPriceInShib), "Payment failed");
+        shibToken.transferFrom(msg.sender, address(this), totalPriceInShib);
 
         address privateRoundAddress = vestingGroups[0];
         VestingContract privateRoundContract = VestingContract(
