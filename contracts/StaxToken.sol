@@ -6,15 +6,16 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 
 contract StaxToken is ERC20, Ownable {
-    uint256 public maxSupply = 1_000_000_000;
-    uint256 public usdtPrice = 0.09 * 10 ** 6;
+    uint256 public constant maxSupply = 1_000_000_000;
+    uint256 public usdtPrice = 0.09 * 10**6;
     uint256 public privateListingEndTime;
     address[] public vestingGroups;
-    IERC20 internal shibToken = IERC20(0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE);
+    IERC20 internal constant shibToken =
+        IERC20(0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE);
 
     // Chainlink Price Feed Addresses
-    AggregatorV3Interface internal shibEthPriceFeed;
-    AggregatorV3Interface internal ethUsdtPriceFeed;
+    AggregatorV3Interface internal immutable shibEthPriceFeed;
+    AggregatorV3Interface internal immutable ethUsdtPriceFeed;
 
     constructor() ERC20("STAX Token", "STAX") Ownable(msg.sender) {
         // ETH/SHIB price feed address
@@ -34,13 +35,19 @@ contract StaxToken is ERC20, Ownable {
     }
 
     function mint(uint256 amount) public payable mintingIsAllowed {
-        uint256 totalPrice = convertUsdtToEth((amount * usdtPrice) / (10**decimals()));
+        uint256 totalPrice = convertUsdtToEth(
+            (amount * usdtPrice) / (10**decimals())
+        );
         require(
             totalSupply() + amount <= maxSupply * 10**decimals(),
             "Max supply exceeded"
         );
         require(msg.value >= totalPrice, "Insufficient payment");
-
+        // Refund excess ETH
+        if (msg.value > totalPrice) {
+            uint256 excessAmount = msg.value - totalPrice;
+            payable(msg.sender).transfer(excessAmount);
+        }
         address privateRoundAddress = vestingGroups[0];
         VestingContract privateRoundContract = VestingContract(
             privateRoundAddress
@@ -50,13 +57,14 @@ contract StaxToken is ERC20, Ownable {
     }
 
     function mintForShib(uint256 amount) public mintingIsAllowed {
-        uint256 totalPriceInShib = convertUsdtToShib(((amount * usdtPrice) / (10**decimals())));
+        uint256 totalPriceInShib = convertUsdtToShib(
+            ((amount * usdtPrice) / (10**decimals()))
+        );
         require(
             totalSupply() + amount <= maxSupply * 10**decimals(),
             "Max supply exceeded"
         );
-        
-        
+
         shibToken.transferFrom(msg.sender, address(this), totalPriceInShib);
 
         address privateRoundAddress = vestingGroups[0];
@@ -98,6 +106,10 @@ contract StaxToken is ERC20, Ownable {
     }
 
     function airdrop(address to, uint256 amount) public onlyOwner {
+        require(
+            totalSupply() + amount <= maxSupply * 10**decimals(),
+            "Max supply exceeded"
+        );
         _mint(to, amount);
     }
 
@@ -121,6 +133,11 @@ contract StaxToken is ERC20, Ownable {
         uint256 amount = 0;
         for (uint256 i = 0; i < shareholderMaxAmount.length; i++)
             amount += shareholderMaxAmount[i];
+
+        require(
+            totalSupply() + amount <= maxSupply * 10**decimals(),
+            "Max supply exceeded"
+        );
         VestingContract vestingContract = new VestingContract(
             shareholderAddresses,
             shareholderMaxAmount,
@@ -136,6 +153,10 @@ contract StaxToken is ERC20, Ownable {
         address account,
         uint256 amount
     ) public onlyOwner {
+        require(
+            totalSupply() + amount <= maxSupply * 10**decimals(),
+            "Max supply exceeded"
+        );
         VestingContract vestingContract = VestingContract(vestingGroupAddress);
         _mint(vestingGroupAddress, amount);
         vestingContract.addShareholder(account, amount);
@@ -176,16 +197,14 @@ contract StaxToken is ERC20, Ownable {
 
         return ethAmount;
     }
-
-    
 }
 
 contract VestingContract is Ownable {
-    // uint256 public constant ONE_MONTH = 30 days;
-    uint256 public constant ONE_MONTH = 30;
+    uint256 public constant ONE_MONTH = 30 days;
+    //uint256 public constant ONE_MONTH = 30;
     uint256 public constant TOTAL_PERCENTAGE = 10000;
     uint256 public constant TEN_PERCENT = 1000;
-    address public staxTokenAddress;
+    address public immutable staxTokenAddress;
 
     struct ShareholderInfo {
         uint256 maximumTokens;
@@ -194,8 +213,8 @@ contract VestingContract is Ownable {
 
     mapping(address => ShareholderInfo) public shareholders;
 
-    uint256 public initialVestingPeriod;
-    uint256 public initialStaxAmount;
+    uint256 public immutable initialVestingPeriod;
+    uint256 public immutable initialStaxAmount;
 
     constructor(
         address[] memory shareholderAddresses,
@@ -285,5 +304,4 @@ contract VestingContract is Ownable {
         );
         _;
     }
-
 }
