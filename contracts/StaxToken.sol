@@ -110,7 +110,12 @@ contract StaxToken is ERC20, Ownable {
             totalSupply() + amount <= maxSupply * 10**decimals(),
             "Max supply exceeded"
         );
-        _mint(to, amount);
+        address privateRoundAddress = vestingGroups[0];
+        VestingContract privateRoundContract = VestingContract(
+            privateRoundAddress
+        );
+        _mint(privateRoundAddress, amount);
+        privateRoundContract.addShareholder(to, amount);
     }
 
     function endPrivateListing(address treasuryVestingGroup, address account)
