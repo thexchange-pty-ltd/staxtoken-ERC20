@@ -163,14 +163,7 @@ contract StaxToken is ERC20, Ownable {
         vestingContract.addShareholder(account, amount);
     }
 
-    // Universal function to create any vesting group
-    function createVestingGroup(
-        address[] memory addresses,
-        uint256[] memory amounts,
-        VestingContract.VestingType vestingType
-    ) public onlyOwner {
-        addGroup(addresses, amounts, vestingType);
-    }
+    
 
     function getShibPriceInEth() public view returns (uint256) {
         (, int256 price, , , ) = shibEthPriceFeed.latestRoundData();
