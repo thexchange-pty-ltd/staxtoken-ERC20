@@ -7,7 +7,7 @@ import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 
 contract StaxToken is ERC20, Ownable {
     uint256 public constant maxSupply = 1_000_000_000;
-    uint256 public usdtPrice = 0.09 * 10**6;
+    uint256 public usdtPrice = 0.075 * 10**6;
     uint256 public privateListingEndTime;
     address[] public vestingGroups;
     IERC20 internal constant shibToken =
@@ -31,7 +31,7 @@ contract StaxToken is ERC20, Ownable {
 
         uint256[] memory maxAmounts = new uint256[](0);
         // private round group
-        addGroup(addresses, maxAmounts, 0);
+        addGroup(addresses, maxAmounts, VestingContract.VestingType.PRIVATE_ROUND);
     }
 
     function mint(uint256 amount) public payable mintingIsAllowed {
@@ -129,7 +129,7 @@ contract StaxToken is ERC20, Ownable {
     function addGroup(
         address[] memory shareholderAddresses,
         uint256[] memory shareholderMaxAmount,
-        uint256 initialVestingPeriod
+        VestingContract.VestingType vestingType
     ) public onlyOwner {
         uint256 amount = 0;
         for (uint256 i = 0; i < shareholderMaxAmount.length; i++)
@@ -139,14 +139,14 @@ contract StaxToken is ERC20, Ownable {
             totalSupply() + amount <= maxSupply * 10**decimals(),
             "Max supply exceeded"
         );
-        VestingContract vestingContract = new VestingContract(
-            shareholderAddresses,
-            shareholderMaxAmount,
-            initialVestingPeriod,
-            amount
-        );
+        VestingContract vestingContract = new VestingContract(address(this), vestingType);
         _mint(address(vestingContract), amount);
         vestingGroups.push(address(vestingContract));
+        
+        // Add shareholders to the vesting contract
+        for (uint256 i = 0; i < shareholderAddresses.length; i++) {
+            vestingContract.addShareholder(shareholderAddresses[i], shareholderMaxAmount[i]);
+        }
     }
 
     function addShareholder(
@@ -161,6 +161,15 @@ contract StaxToken is ERC20, Ownable {
         VestingContract vestingContract = VestingContract(vestingGroupAddress);
         _mint(vestingGroupAddress, amount);
         vestingContract.addShareholder(account, amount);
+    }
+
+    // Universal function to create any vesting group
+    function createVestingGroup(
+        address[] memory addresses,
+        uint256[] memory amounts,
+        VestingContract.VestingType vestingType
+    ) public onlyOwner {
+        addGroup(addresses, amounts, vestingType);
     }
 
     function getShibPriceInEth() public view returns (uint256) {
@@ -202,10 +211,25 @@ contract StaxToken is ERC20, Ownable {
 
 contract VestingContract is Ownable {
     uint256 public constant ONE_MONTH = 30 days;
-    //uint256 public constant ONE_MONTH = 30;
+    //uint256 public constant ONE_MONTH = 60;
     uint256 public constant TOTAL_PERCENTAGE = 10000;
-    uint256 public constant TEN_PERCENT = 1000;
     address public immutable staxTokenAddress;
+    VestingType public immutable vestingType;
+
+    enum VestingType {
+        SEED_ROUND,           // 2.5% at 30d, 5% at 60d, 10% at 90d, then 10% monthly
+        PRIVATE_ROUND,        // Same as seed round
+        PUBLIC_LISTING,       // 10% immediate, then 10% monthly
+        LIQUIDITY,           // 100% immediate
+        MARKETING,           // 25% immediate, 25% at 30d, 25% at 60d, 25% at 90d
+        REWARDS,             // Same as seed round
+        REFERRALS_STAKING,   // Same as seed round
+        ADVISORS,            // Same as seed round
+        TEAM,                // Same as seed round
+        TREASURY,            // 180d lock, then 10% monthly
+        RESERVES,            // 10% immediate, then 10% monthly
+        FOUNDERS             // 90d lock, then 10% monthly
+    }
 
     struct ShareholderInfo {
         uint256 maximumTokens;
@@ -214,24 +238,9 @@ contract VestingContract is Ownable {
 
     mapping(address => ShareholderInfo) public shareholders;
 
-    uint256 public immutable initialVestingPeriod;
-    uint256 public immutable initialStaxAmount;
-
-    constructor(
-        address[] memory shareholderAddresses,
-        uint256[] memory shareholderAmount,
-        uint256 _initialVestingPeriod,
-        uint256 _initialStaxAmount
-    ) Ownable(msg.sender) {
-        staxTokenAddress = msg.sender;
-        initialVestingPeriod = _initialVestingPeriod;
-        initialStaxAmount = _initialStaxAmount;
-        for (uint256 i = 0; i < shareholderAddresses.length; i++) {
-            shareholders[shareholderAddresses[i]] = ShareholderInfo(
-                shareholderAmount[i],
-                0
-            );
-        }
+    constructor(address _staxTokenAddress, VestingType _vestingType) Ownable(msg.sender) {
+        staxTokenAddress = _staxTokenAddress;
+        vestingType = _vestingType;
     }
 
     function calculateAllowedAmount(address shareholderAddress)
@@ -239,63 +248,114 @@ contract VestingContract is Ownable {
         view
         returns (uint256)
     {
-        uint256 allowedAmountInPercentage = 0;
-        uint256 maxWithdrawableAmount = shareholders[shareholderAddress]
-            .maximumTokens;
+        ShareholderInfo memory shareholder = shareholders[shareholderAddress];
+        if (shareholder.maximumTokens == 0) return 0;
+
         StaxToken staxToken = StaxToken(staxTokenAddress);
+        uint256 listingTime = staxToken.privateListingEndTime();
+        
+        if (listingTime == 0) return 0; // Listing hasn't started yet
 
-        uint256 privateListingEndTime = staxToken.privateListingEndTime();
+        uint256 timeSinceListing = block.timestamp - listingTime;
+        uint256 allowedPercentage = calculateVestingPercentage(
+            vestingType,
+            timeSinceListing
+        );
 
-        uint256 initialVestingPeriodEnd = privateListingEndTime +
-            (initialVestingPeriod * ONE_MONTH);
-
-        if (
-            privateListingEndTime > 0 &&
-            initialVestingPeriodEnd <= block.timestamp
-        ) {
-            allowedAmountInPercentage += TEN_PERCENT;
-        }
-
-        if (
-            block.timestamp > initialVestingPeriodEnd &&
-            privateListingEndTime > 0
-        ) {
-            uint256 vestingPeriodElapsedTime = block.timestamp -
-                initialVestingPeriodEnd;
-            uint256 months = vestingPeriodElapsedTime / ONE_MONTH;
-
-            allowedAmountInPercentage += months * TEN_PERCENT;
-
-            // Cap it at TOTAL_PERCENTAGE
-            if (allowedAmountInPercentage > TOTAL_PERCENTAGE) {
-                allowedAmountInPercentage = TOTAL_PERCENTAGE;
-            }
-        }
-
-        uint256 allowedAmount = (maxWithdrawableAmount *
-            allowedAmountInPercentage) / TOTAL_PERCENTAGE;
-
+        uint256 allowedAmount = (shareholder.maximumTokens * allowedPercentage) / TOTAL_PERCENTAGE;
         return allowedAmount;
+    }
+
+    function calculateVestingPercentage(VestingType _vestingType, uint256 timeSinceListing)
+        public
+        pure
+        returns (uint256)
+    {
+        uint256 months = timeSinceListing / ONE_MONTH;
+        
+        if (_vestingType == VestingType.LIQUIDITY) {
+            return TOTAL_PERCENTAGE; // 100% immediate
+        }
+        
+        if (_vestingType == VestingType.PUBLIC_LISTING || _vestingType == VestingType.RESERVES) {
+            // 10% immediate, then 10% monthly
+            uint256 publicReservesPercentage = 1000 + (months * 1000); // 10% + (months * 10%)
+            return publicReservesPercentage > TOTAL_PERCENTAGE ? TOTAL_PERCENTAGE : publicReservesPercentage;
+        }
+        
+        if (_vestingType == VestingType.MARKETING) {
+            // 25% immediate, 25% at 30d, 25% at 60d, 25% at 90d
+            uint256 marketingPercentage = (months + 1) * 2500; // (months + 1) * 25%
+            return marketingPercentage > TOTAL_PERCENTAGE ? TOTAL_PERCENTAGE : marketingPercentage;
+        }
+        
+        if (_vestingType == VestingType.TREASURY) {
+            // 6 months lock, then 10% monthly
+            if (timeSinceListing < 6 * ONE_MONTH) return 0;
+            uint256 monthsAfterLock = (timeSinceListing - 6 * ONE_MONTH) / ONE_MONTH;
+            uint256 treasuryPercentage = (monthsAfterLock + 1) * 1000; // (months + 1) * 10%
+            return treasuryPercentage > TOTAL_PERCENTAGE ? TOTAL_PERCENTAGE : treasuryPercentage;
+        }
+        
+        if (_vestingType == VestingType.FOUNDERS) {
+            // 3 months lock, then 10% monthly
+            if (timeSinceListing < 3 * ONE_MONTH) return 0;
+            uint256 monthsAfterLock = (timeSinceListing - 3 * ONE_MONTH) / ONE_MONTH;
+            uint256 foundersPercentage = (monthsAfterLock + 1) * 1000; // (months + 1) * 10%
+            return foundersPercentage > TOTAL_PERCENTAGE ? TOTAL_PERCENTAGE : foundersPercentage;
+        }
+        
+        // Default for SEED_ROUND, PRIVATE_ROUND, REWARDS, REFERRALS_STAKING, ADVISORS, TEAM
+        // 2.5% at 30d, 5% at 60d, 10% at 90d, then 10% monthly
+        if (months == 0) return 0; // No tokens before 30 days
+        if (months == 1) return 250; // 2.5%
+        if (months == 2) return 750; // 2.5% + 5% = 7.5%
+        if (months == 3) return 1750; // 2.5% + 5% + 10% = 17.5%
+        
+        // After 90 days: 17.5% + (additional months * 10%)
+        uint256 additionalMonths = months - 3;
+        uint256 totalPercentage = 1750 + (additionalMonths * 1000); // 17.5% + (additional months * 10%)
+        return totalPercentage > TOTAL_PERCENTAGE ? TOTAL_PERCENTAGE : totalPercentage;
     }
 
     function withdraw() public onlyShareholder {
         uint256 allowedAmount = calculateAllowedAmount(msg.sender);
         uint256 withdrawnTokens = shareholders[msg.sender].withdrawnTokens;
+        require(allowedAmount > withdrawnTokens, "No tokens available for withdrawal");
+        
         StaxToken staxToken = StaxToken(staxTokenAddress);
         uint256 amount = allowedAmount - withdrawnTokens;
+        require(amount > 0, "No tokens available for withdrawal");
         staxToken.transfer(msg.sender, amount);
         shareholders[msg.sender].withdrawnTokens += amount;
     }
 
-    function addShareholder(address account, uint256 maximumTokens)
-        public
-        onlyOwner
-    {
+    function addShareholder(
+        address account, 
+        uint256 maximumTokens
+    ) public onlyOwner {
         if (shareholders[account].maximumTokens > 0) {
             shareholders[account].maximumTokens += maximumTokens;
         } else {
             shareholders[account] = ShareholderInfo(maximumTokens, 0);
         }
+    }
+
+    function getVestingInfo(address shareholderAddress) 
+        public 
+        view 
+        returns (
+            uint256 maximumTokens,
+            uint256 withdrawnTokens,
+            VestingType contractVestingType,
+            uint256 availableForWithdrawal
+        ) 
+    {
+        ShareholderInfo memory shareholder = shareholders[shareholderAddress];
+        maximumTokens = shareholder.maximumTokens;
+        withdrawnTokens = shareholder.withdrawnTokens;
+        contractVestingType = vestingType;
+        availableForWithdrawal = calculateAllowedAmount(shareholderAddress) - withdrawnTokens;
     }
 
     modifier onlyShareholder() {
