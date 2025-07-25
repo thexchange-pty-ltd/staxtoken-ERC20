@@ -131,6 +131,7 @@ contract StaxToken is ERC20, Ownable {
         uint256[] memory shareholderMaxAmount,
         VestingContract.VestingType vestingType
     ) public onlyOwner {
+        require(shareholderAddresses.length == shareholderMaxAmount.length, "Arrays must be the same length");
         uint256 amount = 0;
         for (uint256 i = 0; i < shareholderMaxAmount.length; i++)
             amount += shareholderMaxAmount[i];
@@ -158,6 +159,17 @@ contract StaxToken is ERC20, Ownable {
             totalSupply() + amount <= maxSupply * 10**decimals(),
             "Max supply exceeded"
         );
+        
+        // Verify this address is actually one of our vesting groups
+        bool isValidVestingGroup = false;
+        for (uint256 i = 0; i < vestingGroups.length; i++) {
+            if (vestingGroups[i] == vestingGroupAddress) {
+                isValidVestingGroup = true;
+                break;
+            }
+        }
+        require(isValidVestingGroup, "Address is not a valid vesting group");
+        
         VestingContract vestingContract = VestingContract(vestingGroupAddress);
         _mint(vestingGroupAddress, amount);
         vestingContract.addShareholder(account, amount);
